@@ -389,7 +389,22 @@ namespace GHelper.Mode
             Toast();
         }
 
+        // Custom build: fan-curve writes can now come from background threads (fan chart, mode changes,
+        // re-applies). Run them one set at a time so the spacing between EC writes holds, and count them
+        // as an EC write window for the dGPU watcher.
+        static readonly object _fansLock = new();
+
         public void AutoFans(bool force = false)
+        {
+            lock (_fansLock)
+            {
+                BeginEcBurst();
+                try { AutoFansCore(force); }
+                finally { EndEcBurst(); }
+            }
+        }
+
+        private void AutoFansCore(bool force)
         {
             customFans = false;
 
