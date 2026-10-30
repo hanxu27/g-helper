@@ -101,6 +101,11 @@ public class NvidiaGpuControl : IGpuControl
         var state = GetGpuState();
         if (state == GpuState.Off) return null;
 
+        // Custom build: never wake a sleeping dGPU just to read its temperature. Each wake is a power on/off
+        // cycle whose "dGPU on/off" EC notification the BIOS can silently drop. HardwareControl falls back to
+        // the EC's GPU temperature. Set "gpu_temp_wake": 1 to restore the periodic wake-and-read.
+        if (state == GpuState.Asleep && !AppConfig.Is("gpu_temp_wake")) return null;
+
         if ((_readTask?.IsCompleted ?? true) && (state == GpuState.Active || ShouldRefresh()))
         {
             _readTask = Task.Run(() =>

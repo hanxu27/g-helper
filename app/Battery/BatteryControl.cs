@@ -27,10 +27,56 @@ namespace GHelper.Battery
             else SetBatteryLimitFull();
         }
 
+        // Custom build: the battery limit goes through the EC mailbox, which the BIOS gives up on after ~20 ms.
+        // G-Helper used to re-write it several times around resume/screen-on/charger events, right alongside
+        // mode/fan writes and dGPU power-ons. Writes now run in the background, skip a value that was written
+        // successfully within battery_dedupe seconds (default 10), wait for other EC writes, and always send
+        // the most recently requested value.
+        static readonly object _limitLock = new();
+        static volatile int _pendingLimit = -1;
+        static int _lastLimitWritten = -1;
+        static long _lastLimitTime = 0;
+
+        static void QueueBatteryLimit(int limit, bool force = false)
+        {
+            _pendingLimit = limit;
+            Task.Run(() =>
+            {
+                lock (_limitLock)
+                {
+                    int target = _pendingLimit;
+                    if (target < 0) return;
+
+                    long now = Environment.TickCount64;
+                    int dedupeMs = AppConfig.Get("battery_dedupe", 10) * 1000;
+                    if (!force && target == _lastLimitWritten && now - _lastLimitTime < dedupeMs)
+                    {
+                        Logger.WriteLine($"BatteryLimit = {target} : skipped (already set)");
+                        return;
+                    }
+
+                    int result = 0;
+                    GHelper.Mode.ModeControl.RunEcWrite(() => result = Program.acpi.DeviceSet(AsusACPI.BatteryLimit, target, "BatteryLimit"));
+
+                    // Only remember writes the EC accepted, so a dropped one is retried next time
+                    if (result == 1) { _lastLimitWritten = target; _lastLimitTime = Environment.TickCount64; }
+                    else _lastLimitWritten = -1;
+                }
+            });
+        }
+
+        /// <summary>Custom build: force one re-send of the current target, used by the quiet re-apply.</summary>
+        public static void ReapplyLimit()
+        {
+            int limit = chargeFull ? 100 : AppConfig.Get("charge_limit");
+            if (limit < 40 || limit > 100) return;
+            QueueBatteryLimit(limit, force: true);
+        }
+
         public static void SetBatteryLimitFull()
         {
             chargeFull = true;
-            Program.acpi.DeviceSet(AsusACPI.BatteryLimit, 100, "BatteryLimit");
+            QueueBatteryLimit(100);
             Program.settingsForm.VisualiseBatteryFull();
         }
 
@@ -77,7 +123,7 @@ namespace GHelper.Battery
 
             if (setLimit > 0) SetAsusChargeLimit(limit);
 
-            Program.acpi.DeviceSet(AsusACPI.BatteryLimit, limit, "BatteryLimit");
+            QueueBatteryLimit(limit);
 
             AppConfig.Set("charge_limit", limit);
             chargeFull = false;

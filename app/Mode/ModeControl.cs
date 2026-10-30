@@ -97,8 +97,24 @@ namespace GHelper.Mode
                 return;
             }
 
-            Logger.WriteLine("Quiet re-apply: re-sending mode, fans and power");
+            Logger.WriteLine("Quiet re-apply: re-sending mode, fans, power and battery limit");
             SetPerformanceMode();
+
+            // The battery limit goes through the same EC mailbox; BatteryControl waits for the mode writes above
+            GHelper.Battery.BatteryControl.ReapplyLimit();
+        }
+
+        /// <summary>
+        /// Custom build: for other EC mailbox writes (e.g. battery limit). Waits until G-Helper's mode/fan writes
+        /// are done (up to maxMs), then marks the write as an EC burst so the dGPU watcher accounts for it.
+        /// </summary>
+        public static void RunEcWrite(Action write, int maxMs = 5000)
+        {
+            for (int waited = 0; Volatile.Read(ref _ecBurstDepth) > 0 && waited < maxMs; waited += 50) Thread.Sleep(50);
+
+            BeginEcBurst();
+            try { write(); }
+            finally { EndEcBurst(); }
         }
 
         public ModeControl()
