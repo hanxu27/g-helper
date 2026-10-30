@@ -76,7 +76,7 @@ namespace GHelper
             }
 
             Logger.WriteLine("----------------------");
-            Logger.WriteLine("App launched: " + AppConfig.GetModel() + " :" + Assembly.GetExecutingAssembly().GetName().Version.ToString() + CultureInfo.CurrentUICulture + (ProcessHelper.IsUserAdministrator() ? "." : ""));
+            Logger.WriteLine("App launched: " + AppConfig.GetModel() + " :" + GHelper.AutoUpdate.AutoUpdateControl.DisplayVersion + " " + CultureInfo.CurrentUICulture + (ProcessHelper.IsUserAdministrator() ? "." : ""));
 
             settingsForm = new SettingsForm();
             modeControl = new ModeControl();

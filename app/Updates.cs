@@ -22,11 +22,16 @@ namespace GHelper
 
         private readonly UpdatesController controller = new();
 
-        private void LoadUpdates(bool force = false)
+        // Custom build: opening the window no longer contacts ASUS servers.
+        // BIOS/driver versions are only checked when the user presses Refresh.
+        private void LoadUpdates(bool force = false, bool fetch = true)
         {
 
-            if (!force && (Math.Abs(DateTimeOffset.Now.ToUnixTimeMilliseconds() - lastUpdate) < 5000)) return;
-            lastUpdate = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            if (fetch)
+            {
+                if (!force && (Math.Abs(DateTimeOffset.Now.ToUnixTimeMilliseconds() - lastUpdate) < 5000)) return;
+                lastUpdate = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            }
 
             (bios, model) = AppConfig.GetBiosAndModel();
             if (AppConfig.ContainsModel("NUC")) model = AppConfig.GetModelShort();
@@ -60,6 +65,16 @@ namespace GHelper
 
             ClearTable(tableBios);
             ClearTable(tableDrivers);
+
+            if (!fetch)
+            {
+                labelUpdates.ForeColor = ForeColor;
+                labelUpdates.Text = "Press refresh to check for updates";
+                panelBios.AccessibleName = labelUpdates.Text;
+                buttonRefresh.TabStop = true;
+                ResumeLayout(false);
+                return;
+            }
 
             string rogParam = AppConfig.IsROG() ? "&systemCode=rog" : "";
 
@@ -165,7 +180,7 @@ namespace GHelper
 
         private void ButtonRefresh_Click(object? sender, EventArgs e)
         {
-            LoadUpdates();
+            LoadUpdates(true);
         }
 
         private void AlignLabelUpdates()
@@ -180,7 +195,7 @@ namespace GHelper
             Top = Program.settingsForm.Top;
             Left = Program.settingsForm.Left - Width - 5;
             AlignLabelUpdates();
-            LoadUpdates(true);
+            LoadUpdates(true, fetch: false);
         }
 
         private void AddDriverRow(UpdatesController.DriverUpdate driver, TableLayoutPanel table)

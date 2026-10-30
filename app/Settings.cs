@@ -297,8 +297,12 @@ namespace GHelper
             labelVisual.Click += LabelVisual_Click;
             labelCharge.Click += LabelCharge_Click;
 
-            donateControl = new DonateControl(this, buttonDonate);
-            donateControl.Init();
+            // Custom build: no Donate / Thank you button. Remove it and collapse its column
+            // so Updates and Quit share the footer row.
+            tableButtons.Controls.Remove(buttonDonate);
+            buttonDonate.Visible = false;
+            tableButtons.ColumnStyles[0].SizeType = SizeType.Absolute;
+            tableButtons.ColumnStyles[0].Width = 0;
 
             labelBacklight.ForeColor = colorStandard;
             labelBacklight.Click += LabelBacklight_Click;

@@ -20,12 +20,29 @@ namespace GHelper.AutoUpdate
         public AutoUpdateControl(SettingsForm settingsForm)
         {
             settings = settingsForm;
-            var appVersion = new Version(Assembly.GetExecutingAssembly().GetName().Version.ToString());
-            settings.SetVersionLabel(Properties.Strings.VersionLabel + $": {appVersion.Major}.{appVersion.Minor}.{appVersion.Build} (dGPU EC sync)");
+            settings.SetVersionLabel(Properties.Strings.VersionLabel + ": " + DisplayVersion);
         }
+
+        // Custom build: version shown with the suffix from <InformationalVersion> in GHelper.csproj (e.g. 0.290-dgpufix)
+        public static string DisplayVersion
+        {
+            get
+            {
+                var info = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+                if (!string.IsNullOrEmpty(info)) return info.Split('+')[0];
+                var v = Assembly.GetExecutingAssembly().GetName().Version!;
+                return $"{v.Major}.{v.Minor}.{v.Build}";
+            }
+        }
+
+        // Custom build: app self-update is disabled so an official release never replaces this build.
+        // Clicking the version label still just opens the releases page.
+        static readonly bool UpdatesDisabled = true;
 
         public void CheckForUpdates()
         {
+            if (UpdatesDisabled) return;
+
             // Run update once per 12 hours
             if (Math.Abs(DateTimeOffset.Now.ToUnixTimeSeconds() - lastUpdate) < 43200) return;
             lastUpdate = DateTimeOffset.Now.ToUnixTimeSeconds();
@@ -66,7 +83,7 @@ namespace GHelper.AutoUpdate
         async void CheckForUpdatesAsync(bool force = false)
         {
 
-            if (AppConfig.Is("skip_updates")) return;
+            if (UpdatesDisabled || AppConfig.Is("skip_updates")) return;
 
             try
             {

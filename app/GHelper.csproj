@@ -20,6 +20,9 @@
     <IntermediateOutputPath>obj\x64\$(Configuration)\</IntermediateOutputPath>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
     <AssemblyVersion>0.290</AssemblyVersion>
+    <!-- Custom build: version suffix marks the dGPU/EC sync fix (shown in the app and in the exe's file properties) -->
+    <InformationalVersion>$(AssemblyVersion)-dgpufix</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
   </PropertyGroup>
 
