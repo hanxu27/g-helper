@@ -125,14 +125,47 @@ namespace GHelper.Mode
 
         private static void SetReapplyEnabled(bool enabled)
         {
+            // Custom build: keep re-applying while fPPT is set through the SMU, even with UV off
+            enabled = enabled || _fastSmu;
+
+            if (reapplyTimer == null && enabled && _fastSmu)
+            {
+                reapplyTimer = new System.Timers.Timer(AppConfig.Get("reapply_time", 30) * 1000);
+                reapplyTimer.Elapsed += (s, e) => Program.modeControl.ReapplyTimer_Elapsed(s, e);
+            }
+
             if (reapplyTimer != null) reapplyTimer.Enabled = enabled;
         }
 
 
         private void ReapplyTimer_Elapsed(object? sender, System.Timers.ElapsedEventArgs e)
         {
-            SetCPUTemp(AppConfig.GetMode("cpu_temp"));
+            // Timer used to run only with UV applied; it can now also run for SMU fPPT alone
+            if (AppConfig.IsApplyUV()) SetCPUTemp(AppConfig.GetMode("cpu_temp"));
             SetRyzenPower();
+            if (_fastSmu) SetFastSmu();
+        }
+
+        // Custom build: fPPT through the SMU (same command RyzenAdj/UXTU use) when the BIOS has no fPPT ACPI method.
+        // ASUS firmware overwrites SMU limits on mode/charger changes, so this is re-applied by the reapply timer.
+        static bool _fastSmu = false;
+
+        public static bool IsFastSmuAvailable()
+            => CpuInfo.IsAMD && !Program.acpi.IsSupported(AsusACPI.PPT_APUC1) && !Program.acpi.IsAllAmdPPT() && IsPawnInstalled();
+
+        private SmuStatus? SetFastSmu(bool log = false)
+        {
+            int limit_total = AppConfig.GetMode("limit_total");
+            int limit_slow = AppConfig.GetMode("limit_slow", limit_total);
+            int limit_fast = AppConfig.GetMode("limit_fast", limit_slow);
+            if (limit_fast < AsusACPI.MinTotal || limit_fast > AsusACPI.MaxTotal) return null;
+
+            var smu = GetSmu();
+            if (smu == null) return null;
+
+            var status = smu.SetFastLimit(limit_fast);
+            if (log) Logger.WriteLine($"FAST (SMU): {limit_fast}W {status}");
+            return status;
         }
 
         public void WaitForApply()
@@ -369,6 +402,13 @@ namespace GHelper.Mode
             bool applyPower = AppConfig.IsApplyPower();
             bool applyFans = AppConfig.IsApplyFans();
 
+            // Custom build: stop re-applying SMU fPPT once power limits are no longer applied
+            if (!applyPower && _fastSmu)
+            {
+                _fastSmu = false;
+                SetReapplyEnabled(AppConfig.IsApplyUV());
+            }
+
             if (applyPower && !applyFans && AppConfig.IsFanRequired())
             {
                 AutoFans(true);
@@ -467,6 +507,19 @@ namespace GHelper.Mode
             else if (isAMD && Program.acpi.IsSupported(AsusACPI.PPT_APUC1)) // FPPT boost for non all-amd models
             {
                 Program.acpi.DeviceSet(AsusACPI.PPT_APUC1, limit_fast, "PowerLimit C1");
+            }
+            else if (IsFastSmuAvailable()) // Custom build: no fPPT in BIOS, set it through the SMU
+            {
+                if (ProcessHelper.IsUserAdministrator())
+                {
+                    _fastSmu = SetFastSmu(true) == SmuStatus.OK;
+                    SetReapplyEnabled(AppConfig.IsApplyUV());
+                }
+                else if (launchAsAdmin)
+                {
+                    ProcessHelper.RunAsAdmin("cpu");
+                    return;
+                }
             }
 
             SetModeLabel();

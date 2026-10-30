@@ -1062,6 +1062,13 @@ namespace GHelper
                     labelLeftFast.Text = "fPPT (CPU short boost)";
                     panelFast.Visible = modeC1;
 
+                    // Custom build: BIOS has no fPPT method, offer it through the SMU instead (needs PawnIO + admin)
+                    if (!modeC1 && ModeControl.IsFastSmuAvailable())
+                    {
+                        labelLeftFast.Text = "fPPT (CPU short boost, SMU)";
+                        panelFast.Visible = true;
+                    }
+
                 }
                 else
                 {

@@ -157,6 +157,9 @@ namespace PawnIO
             slow  = SetSlow(slowW);
         }
 
+        // Custom build: fPPT on its own, for laptops whose BIOS has no fPPT (0x001200C1) ACPI method
+        public SmuStatus SetFastLimit(int watts) => SetFast(watts);
+
         public SmuStatus SetCoAll(int value)
         {
             uint v = EncodeCurve(value);
