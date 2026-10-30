@@ -221,6 +221,10 @@ namespace GHelper.Gpu
                     {
                         Program.modeControl.SetGPUClocks(false);
                     }
+
+                    // Custom build: the Eco switch tells the EC to swap Silent <-> Silent+Eco fan tables without
+                    // checking delivery; re-sending the mode once things settle recomputes and resends it
+                    Program.modeControl.ScheduleQuietReapply("GPU mode " + (eco == 1 ? "Eco" : "Standard"));
                 }
                 catch (Exception ex)
                 {

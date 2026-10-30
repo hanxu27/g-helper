@@ -1402,7 +1402,8 @@ namespace GHelper
             if (AppConfig.Is("xgm_fan"))
                 SaveProfile(seriesXGM, AsusFan.XGM);
 
-            modeControl.AutoFans();
+            // Custom build: AutoFans now waits between EC writes, so keep it off the UI thread
+            Task.Run(() => modeControl.AutoFans());
         }
 
         private void ChartCPU_MouseUp(object? sender, MouseEventArgs e)

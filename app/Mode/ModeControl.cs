@@ -59,6 +59,48 @@ namespace GHelper.Mode
         const int DgpuSettleMs = 2000;
         const int DgpuResyncCooldownS = 60;
 
+        // Custom build: the BIOS gives up on an EC mailbox message after ~20 ms and still reports success for
+        // mode changes and fan-curve "select fan" messages. Space G-Helper's EC writes and re-send once when quiet.
+        static int EcWriteGapMs => Math.Clamp(AppConfig.Get("ec_write_gap", 150), 0, 2000);   // between fan-curve writes
+        static int EcModeGapMs => Math.Clamp(AppConfig.Get("ec_mode_gap", 300), 100, 3000);   // mode write -> fan curves
+        static System.Timers.Timer? quietReapplyTimer;
+
+        /// <summary>
+        /// Re-send mode, fan curves and power limits once, ec_reapply_delay seconds (default 10, 0 = off) after
+        /// startup, wake, charger change or GPU mode switch. The current mode can't be read back from the EC,
+        /// so re-sending is the only way to make sure it took. Debounced: a new trigger restarts the countdown.
+        /// </summary>
+        public void ScheduleQuietReapply(string reason)
+        {
+            int delay = AppConfig.Get("ec_reapply_delay", 10);
+            if (delay <= 0) return;
+
+            if (quietReapplyTimer is null)
+            {
+                quietReapplyTimer = new System.Timers.Timer { AutoReset = false };
+                quietReapplyTimer.Elapsed += QuietReapply_Elapsed;
+            }
+
+            quietReapplyTimer.Stop();
+            quietReapplyTimer.Interval = delay * 1000;
+            quietReapplyTimer.Start();
+            Logger.WriteLine($"Quiet re-apply in {delay}s ({reason})");
+        }
+
+        private void QuietReapply_Elapsed(object? sender, System.Timers.ElapsedEventArgs e)
+        {
+            // Still writing to the EC (e.g. a mode change in progress): try again shortly
+            if (Volatile.Read(ref _ecBurstDepth) > 0)
+            {
+                quietReapplyTimer!.Interval = 2000;
+                quietReapplyTimer.Start();
+                return;
+            }
+
+            Logger.WriteLine("Quiet re-apply: re-sending mode, fans and power");
+            SetPerformanceMode();
+        }
+
         public ModeControl()
         {
             int reapplyTime = AppConfig.Get("reapply_time", IsReapplyTempRequired() ? 30 : 0);
@@ -248,7 +290,9 @@ namespace GHelper.Mode
                     bool deferClocks = DgpuPowerWatcher.IsRunning;
                     if (!deferClocks) SetGPUClocks();
 
-                    await Task.Delay(TimeSpan.FromMilliseconds(100), ct);
+                    // Custom build: give the EC time to finish the mode switch before fan-curve writes
+                    // (the BIOS drops EC mailbox messages that wait more than ~20 ms)
+                    await Task.Delay(TimeSpan.FromMilliseconds(EcModeGapMs), ct);
                     ct.ThrowIfCancellationRequested();
                     AutoFans();
                     await Task.Delay(TimeSpan.FromMilliseconds(1000), ct);
@@ -343,17 +387,25 @@ namespace GHelper.Mode
                     xgmFan = Program.acpi.IsXGConnected();
                 }
 
+                // Custom build: each curve write is "select fan" + "data" EC messages, and the BIOS doesn't check
+                // the select. Space the writes so each one finds the EC mailbox free.
                 int cpuResult = Program.acpi.SetFanCurve(AsusFan.CPU, AppConfig.GetFanConfig(AsusFan.CPU));
+                Thread.Sleep(EcWriteGapMs);
                 int gpuResult = Program.acpi.SetFanCurve(AsusFan.GPU, AppConfig.GetFanConfig(AsusFan.GPU));
 
                 if (AppConfig.Is("mid_fan"))
+                {
+                    Thread.Sleep(EcWriteGapMs);
                     Program.acpi.SetFanCurve(AsusFan.Mid, AppConfig.GetFanConfig(AsusFan.Mid));
+                }
 
 
                 // Alternative way to set fan curve
                 if (cpuResult != 1 || gpuResult != 1)
                 {
+                    Thread.Sleep(EcWriteGapMs);
                     cpuResult = Program.acpi.SetFanRange(AsusFan.CPU, AppConfig.GetFanConfig(AsusFan.CPU));
+                    Thread.Sleep(EcWriteGapMs);
                     gpuResult = Program.acpi.SetFanRange(AsusFan.GPU, AppConfig.GetFanConfig(AsusFan.GPU));
 
                     // Something went wrong, resetting to default profile
@@ -369,6 +421,7 @@ namespace GHelper.Mode
                     customFans = true;
                 }
 
+                Thread.Sleep(EcWriteGapMs);
                 int hystUp = AppConfig.GetMode("hysteresis_up");
                 int hystDown = AppConfig.GetMode("hysteresis_down");
                 if (hystUp > 0 && hystDown > 0)

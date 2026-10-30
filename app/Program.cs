@@ -346,6 +346,9 @@ namespace GHelper
             ScreenControl.InitMiniled();
             VisualControl.InitBrightness();
 
+            // Custom build: re-send mode/fans/power once things are quiet, in case the BIOS dropped an EC message
+            modeControl.ScheduleQuietReapply(init ? "startup" : wakeup ? "wake" : powerChanged ? "power source" : "auto modes");
+
             return true;
         }
 
