@@ -50,7 +50,7 @@ namespace GHelper.Mode
         static CancellationTokenSource _modeCts = new();
         static Task _modeTask = Task.CompletedTask;
 
-        // dGPU/EC sync (opt-in "dgpu_ec_sync"): tracks when G-Helper is writing mode/fan settings to the EC,
+        // dGPU/EC sync (on by default, "dgpu_ec_sync": 0 disables): tracks when G-Helper is writing mode/fan settings to the EC,
         // so a dGPU power-on landing in that window (whose "dGPU on" EC notification the BIOS may drop) can be repaired.
         static int _ecBurstDepth = 0;
         static DateTime _ecBurstEnd = DateTime.MinValue;
@@ -68,7 +68,7 @@ namespace GHelper.Mode
                 reapplyTimer.Elapsed += ReapplyTimer_Elapsed;
             }
 
-            if (AppConfig.Is("dgpu_ec_sync"))
+            if (AppConfig.IsNotFalse("dgpu_ec_sync"))
             {
                 DgpuPowerWatcher.Woke += OnDgpuWoke;
                 DgpuPowerWatcher.Start();

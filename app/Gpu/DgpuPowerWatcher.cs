@@ -14,7 +14,7 @@ namespace GHelper.Gpu
     ///
     /// ModeControl marks the window in which G-Helper is writing to the EC. If the dGPU powers on
     /// inside that window, the mode and fan curves are re-sent once the GPU has settled.
-    /// Opt-in via config key "dgpu_ec_sync".
+    /// On by default; disable with config key "dgpu_ec_sync": 0.
     /// </summary>
     public static class DgpuPowerWatcher
     {
