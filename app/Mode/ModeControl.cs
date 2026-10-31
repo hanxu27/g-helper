@@ -1,3 +1,4 @@
+using GHelper.Gpu;
 using GHelper.Gpu.NVidia;
 using GHelper.Helpers;
 using GHelper.USB;
@@ -49,6 +50,15 @@ namespace GHelper.Mode
         static CancellationTokenSource _modeCts = new();
         static Task _modeTask = Task.CompletedTask;
 
+        // dGPU/EC sync (opt-in "dgpu_ec_sync"): tracks when G-Helper is writing mode/fan settings to the EC,
+        // so a dGPU power-on landing in that window (whose "dGPU on" EC notification the BIOS may drop) can be repaired.
+        static int _ecBurstDepth = 0;
+        static DateTime _ecBurstEnd = DateTime.MinValue;
+        static DateTime _lastDgpuResync = DateTime.MinValue;
+        const int DgpuWakeToleranceMs = 750;   // watcher polls every 500 ms
+        const int DgpuSettleMs = 2000;
+        const int DgpuResyncCooldownS = 60;
+
         public ModeControl()
         {
             int reapplyTime = AppConfig.Get("reapply_time", IsReapplyTempRequired() ? 30 : 0);
@@ -57,6 +67,47 @@ namespace GHelper.Mode
                 reapplyTimer = new System.Timers.Timer(reapplyTime * 1000);
                 reapplyTimer.Elapsed += ReapplyTimer_Elapsed;
             }
+
+            if (AppConfig.Is("dgpu_ec_sync"))
+            {
+                DgpuPowerWatcher.Woke += OnDgpuWoke;
+                DgpuPowerWatcher.Start();
+            }
+        }
+
+        private static void BeginEcBurst() => Interlocked.Increment(ref _ecBurstDepth);
+
+        private static void EndEcBurst()
+        {
+            _ecBurstEnd = DateTime.Now;
+            Interlocked.Decrement(ref _ecBurstDepth);
+        }
+
+        private void OnDgpuWoke(DateTime wakeTime)
+        {
+            // Only Standard (Optimus) mode powers the dGPU on and off at runtime
+            if (AppConfig.Get("gpu_mode") != AsusACPI.GPUModeStandard) return;
+
+            bool inBurst = Volatile.Read(ref _ecBurstDepth) > 0;
+            bool justAfterBurst = (wakeTime - _ecBurstEnd).TotalMilliseconds <= DgpuWakeToleranceMs;
+            if (!inBurst && !justAfterBurst) return;
+
+            if ((DateTime.Now - _lastDgpuResync).TotalSeconds < DgpuResyncCooldownS)
+            {
+                Logger.WriteLine("dGPU woke during EC writes, resync skipped (cooldown)");
+                return;
+            }
+            _lastDgpuResync = DateTime.Now;
+
+            Logger.WriteLine("dGPU woke during EC writes, re-sending mode and fans after it settles");
+
+            Task.Run(async () =>
+            {
+                // Let the current mode/fan writes finish, then give the dGPU power-on time to complete
+                for (int i = 0; i < 100 && Volatile.Read(ref _ecBurstDepth) > 0; i++) await Task.Delay(100);
+                await Task.Delay(DgpuSettleMs);
+                SetPerformanceMode();
+            });
         }
 
         // Cezanne/Rembrandt (Renoir) + Phoenix/HawkPoint (Mobile) silently reset temp limit under load.
@@ -136,6 +187,8 @@ namespace GHelper.Mode
 
             _modeTask = Task.Run(async () =>
             {
+                BeginEcBurst();
+                bool burstOpen = true;
                 try
                 {
                     bool reset = AppConfig.IsResetRequired() && (Modes.GetBase(oldMode) == Modes.GetBase(mode)) && customPower > 0 && !AppConfig.IsApplyPower();
@@ -157,7 +210,10 @@ namespace GHelper.Mode
                     if (AppConfig.Is("status_mode")) Program.acpi.DeviceSet(AsusACPI.StatusMode, [0x00, Modes.GetBase(mode) == AsusACPI.PerformanceSilent ? (byte)0x02 : (byte)0x03], "StatusMode");
                     Program.acpi.SetPerformanceMode(AppConfig.IsManualModeRequired() ? AsusACPI.PerformanceManual : Modes.GetBase(mode));
 
-                    SetGPUClocks();
+                    // With dgpu_ec_sync, GPU clocks (NVAPI, which can power the dGPU on) are applied after the
+                    // EC writes below instead of in the middle of them
+                    bool deferClocks = DgpuPowerWatcher.IsRunning;
+                    if (!deferClocks) SetGPUClocks();
 
                     await Task.Delay(TimeSpan.FromMilliseconds(100), ct);
                     ct.ThrowIfCancellationRequested();
@@ -165,7 +221,15 @@ namespace GHelper.Mode
                     await Task.Delay(TimeSpan.FromMilliseconds(1000), ct);
                     ct.ThrowIfCancellationRequested();
                     AutoPower();
-                    
+
+                    if (deferClocks)
+                    {
+                        EndEcBurst();
+                        burstOpen = false;
+                        await Task.Delay(TimeSpan.FromMilliseconds(DgpuWakeToleranceMs + 250), ct);
+                        SetGPUClocks();
+                    }
+
                     var command = AppConfig.GetModeString("mode_command");
                     if (command is not null)
                     {   Logger.WriteLine("Running mode command: " + command);
@@ -179,6 +243,10 @@ namespace GHelper.Mode
                 catch (Exception ex)
                 {
                     Logger.WriteLine($"SetPerformanceMode failed (mode {mode}): {ex.Message}");
+                }
+                finally
+                {
+                    if (burstOpen) EndEcBurst();
                 }
             }, ct);
 
