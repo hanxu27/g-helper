@@ -19,7 +19,7 @@ Bursts of mode and fan writes from G-Helper (or Armoury Crate) at startup and wa
 ## What's different from upstream G-Helper
 
 **EC reliability**
-- **GPU wake detection (opt-in, see Settings).** Watches the NVIDIA GPU's power state without waking it. If the GPU powers on while G-Helper is writing to the EC, G-Helper re-sends your mode and fan curves once the GPU settles.
+- **GPU wake detection (on by default, see Settings).** Watches the NVIDIA GPU's power state without waking it. If the GPU powers on while G-Helper is writing to the EC, G-Helper re-sends your mode and fan curves once the GPU settles.
 - **Spaced-out EC writes.** Waits 300 ms between a mode change and the fan curves, and 150 ms between each fan-curve write, so each message finds the slot free. Fan curves are also applied one set at a time.
 - **Quiet re-apply.** About 10 seconds after startup, wake, a charger change, or an Eco/Standard switch, G-Helper re-sends mode, fan curves, power limits, and battery charge limit once.
 - **The GPU stays asleep.** G-Helper no longer wakes a sleeping NVIDIA GPU just to read its temperature. It shows the EC's GPU temperature, or blank, while the GPU sleeps.
@@ -49,7 +49,7 @@ Add these to `%AppData%\GHelper\config.json` (inside the `{ }`, separated by com
 
 | Key | Default | What it does |
 |---|---|---|
-| `dgpu_ec_sync` | off | Set to `1` to turn on GPU wake detection. Only active in Standard (Optimus) GPU mode. **Recommended on GA503QS.** |
+| `dgpu_ec_sync` | on | Set to `0` to turn off GPU wake detection. Only active in Standard (Optimus) GPU mode. |
 | `ec_mode_gap` | 300 | Milliseconds between a mode change and the fan-curve writes |
 | `ec_write_gap` | 150 | Milliseconds between individual fan-curve writes |
 | `ec_reapply_delay` | 10 | Seconds before the quiet re-apply. `0` turns it off |
@@ -60,7 +60,7 @@ Add these to `%AppData%\GHelper\config.json` (inside the `{ }`, separated by com
 Example:
 ```json
 {
-  "dgpu_ec_sync": 1,
+  "ec_reapply_delay": 15,
   ...your existing settings...
 }
 ```
