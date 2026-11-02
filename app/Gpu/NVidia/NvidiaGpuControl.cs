@@ -78,6 +78,17 @@ public class NvidiaGpuControl : IGpuControl
         return _lastState;
     }
 
+    // Custom build: fresh, non-waking check. GetGpuState's cache can be stale because the dGPU
+    // auto-suspends about 1 s after waking.
+    public bool IsAsleep
+    {
+        get
+        {
+            _lastStateTime = -StateCacheMs;
+            return GetGpuState() == GpuState.Asleep;
+        }
+    }
+
     public int? ReadCurrentTemperature(bool log = false)
     {
         if (!IsValid) return null;
@@ -271,7 +282,9 @@ public class NvidiaGpuControl : IGpuControl
     }
 
 
-    public int SetMaxGPUClock(int clock)
+    public const int ClockLimitUnknown = -2;
+
+    public int SetMaxGPUClock(int clock, bool noWake = false)
     {
 
         if (clock < MinClockLimit || clock >= MaxClockLimit) clock = 0;
@@ -279,6 +292,10 @@ public class NvidiaGpuControl : IGpuControl
         int _clockLimit = GetMaxGPUCLock();
 
         if (_clockLimit == clock) return 0;
+
+        // Custom build: -1 means the limit couldn't be read (usually a sleeping GPU), which never equals
+        // the target, and nvidia-smi -rgc would wake the GPU just to clear a limit that may not be set
+        if (noWake && clock == 0 && _clockLimit == -1) return ClockLimitUnknown;
 
         if (clock > 0) RunPowershellCommand($"nvidia-smi -lgc 0,{clock}");
         else RunPowershellCommand($"nvidia-smi -rgc");

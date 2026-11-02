@@ -19,7 +19,8 @@ Bursts of mode and fan writes from G-Helper (or Armoury Crate) at startup and wa
 ## What's different from upstream G-Helper
 
 **EC reliability**
-- **GPU wake detection (on by default, see Settings).** Watches the NVIDIA GPU's power state without waking it. If the GPU powers on while G-Helper is writing to the EC, G-Helper re-sends your mode and fan curves once the GPU settles.
+- **GPU wake detection (on by default, see Settings).** Watches the NVIDIA GPU's power state without waking it. If the GPU powers on while G-Helper is writing to the EC, G-Helper re-sends your mode and fan curves as soon as those writes finish, while the GPU is still on. If it has already gone back to sleep, the repair waits for its next wake.
+- **GPU clocks don't wake the GPU.** Clock offsets and limits requested while the GPU sleeps are applied the next time it wakes by itself.
 - **Spaced-out EC writes.** Waits 300 ms between a mode change and the fan curves, and 150 ms between each fan-curve write, so each message finds the slot free. Fan curves are also applied one set at a time.
 - **Quiet re-apply.** About 10 seconds after startup, wake, a charger change, or an Eco/Standard switch, G-Helper re-sends mode, fan curves, power limits, and battery charge limit once.
 - **The GPU stays asleep.** G-Helper no longer wakes a sleeping NVIDIA GPU just to read its temperature. It shows the EC's GPU temperature, or blank, while the GPU sleeps.
@@ -76,7 +77,11 @@ Select-String "dGPU|Quiet re-apply|FAST \(SMU\)|BatteryLimit" $env:APPDATA\GHelp
 |---|---|
 | `dGPU watcher: PCI\VEN_10DE... initial D3` | GPU wake detection started and found the NVIDIA GPU |
 | `dGPU power: D3 -> D0` | It saw the GPU wake up. If this never appears when you start a game, detection doesn't work on your system, but the other fixes still do. |
-| `dGPU woke during EC writes, re-sending mode and fans...` | A collision happened and was repaired |
+| `dGPU woke during EC writes, re-sending mode and fans...` | A collision happened and a repair is running |
+| `dGPU resync: deferred until next dGPU wake` | The GPU went back to sleep first, so the repair waits for its next wake |
+| `dGPU resync: follow-up after cooldown` | A collision during a repair is being repaired once more |
+| `Clocks: GPU asleep, deferred (115, 225, 0)` | Clocks were left for the GPU's next wake instead of waking it |
+| `Clocks: applied on dGPU wake` | Those clocks were applied |
 | `Quiet re-apply: re-sending mode, fans, power and battery limit` | The quiet re-apply ran |
 | `FAST (SMU): 45W OK` | fPPT was set through the SMU |
 | `BatteryLimit = 80 : skipped (already set)` | A duplicate battery limit write was skipped |
@@ -87,6 +92,7 @@ Select-String "dGPU|Quiet re-apply|FAST \(SMU\)|BatteryLimit" $env:APPDATA\GHelp
 - **Mode switches take about half a second longer** because of the spacing.
 - **Re-applies repeat everything a mode switch does,** including the Windows power mode, CPU boost, undervolt, and any per-mode `mode_command`. After startup or wake this can happen up to twice.
 - **GPU temperature may be blank or stale** while the NVIDIA GPU is asleep. That's expected.
+- **GPU clock changes made while the GPU sleeps need admin rights already in place.** They apply on its next wake, which never shows an admin prompt. Run G-Helper as admin if you use clock offsets.
 - **Don't push fPPT too high.** The slider goes to 150 W, but large short bursts of heat are exactly what trips the EC's over-temperature fallback.
 - **On other models:** the EC reliability changes are harmless elsewhere, and the fPPT-through-SMU slider also appears on other AMD laptops whose BIOS lacks fPPT. Both are tested only on a GA503QS.
 - **If fans still get stuck at 100%** with no `dGPU woke during EC writes` or `Quiet re-apply` line near that moment in the log, the cause is likely in the EC firmware itself. Switching to **Ultimate** GPU mode (dGPU always on) avoids the GPU on/off path entirely.

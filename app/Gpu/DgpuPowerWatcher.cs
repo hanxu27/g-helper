@@ -58,6 +58,9 @@ namespace GHelper.Gpu
 
         public static bool IsRunning => _timer is not null;
 
+        /// <summary>Fresh read of whether the dGPU is in D0 right now. Does not wake the device.</summary>
+        public static bool IsPoweredOn => ReadPowerState() == PowerDeviceD0;
+
         public static void Start(int intervalMs = 500)
         {
             if (_timer is not null) return;

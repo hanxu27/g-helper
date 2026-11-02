@@ -58,6 +58,21 @@ namespace GHelper.Mode
         const int DgpuWakeToleranceMs = 750;   // watcher polls every 500 ms
         const int DgpuSettleMs = 2000;
         const int DgpuResyncCooldownS = 60;
+        const int DgpuResyncGapMs = 150;
+
+        // Custom build: the BIOS mode handler can itself wake a sleeping dGPU mid-write, and the GPU auto-suspends
+        // about 1 s later. A resync is only written while the GPU is on, so it causes no new power transition.
+        static int _resyncQueued = 0;
+        static volatile bool _resyncDeferred = false;
+        static bool _resyncFollowUpUsed = false;
+
+        // Custom build: GPU clocks never wake a sleeping dGPU (with the watcher running). Requests made while it
+        // sleeps wait for its next wake, because each wake is an EC notification the BIOS can drop.
+        static readonly object _clocksLock = new();
+        static (int core, int memory, int limit)? _pendingClocks;
+        static (int core, int memory, int limit)? _appliedClocks;
+        static DateTime _appliedClocksTime = DateTime.MinValue;
+        static int _clocksWakeQueued = 0;
 
         // Custom build: the BIOS gives up on an EC mailbox message after ~20 ms and still reports success for
         // mode changes and fan-curve "select fan" messages. Space G-Helper's EC writes and re-send once when quiet.
@@ -129,6 +144,7 @@ namespace GHelper.Mode
             if (AppConfig.IsNotFalse("dgpu_ec_sync"))
             {
                 DgpuPowerWatcher.Woke += OnDgpuWoke;
+                DgpuPowerWatcher.Woke += ApplyPendingClocks;
                 DgpuPowerWatcher.Start();
             }
         }
@@ -148,24 +164,148 @@ namespace GHelper.Mode
 
             bool inBurst = Volatile.Read(ref _ecBurstDepth) > 0;
             bool justAfterBurst = (wakeTime - _ecBurstEnd).TotalMilliseconds <= DgpuWakeToleranceMs;
-            if (!inBurst && !justAfterBurst) return;
-
-            if ((DateTime.Now - _lastDgpuResync).TotalSeconds < DgpuResyncCooldownS)
+            if (!inBurst && !justAfterBurst)
             {
-                Logger.WriteLine("dGPU woke during EC writes, resync skipped (cooldown)");
+                // The GPU came on by itself, so a repair that was waiting for that can run now
+                if (_resyncDeferred) RunDgpuResync();
                 return;
             }
-            _lastDgpuResync = DateTime.Now;
 
-            Logger.WriteLine("dGPU woke during EC writes, re-sending mode and fans after it settles");
+            double cooldownLeft = DgpuResyncCooldownS - (DateTime.Now - _lastDgpuResync).TotalSeconds;
+            if (cooldownLeft > 0)
+            {
+                if (_resyncFollowUpUsed)
+                {
+                    Logger.WriteLine("dGPU woke during EC writes, resync skipped (cooldown)");
+                    return;
+                }
+
+                // Likely the resync's own writes colliding. Repair once more after the cooldown, never again from that one
+                _resyncFollowUpUsed = true;
+                Logger.WriteLine($"dGPU woke during EC writes, follow-up in {cooldownLeft:F0}s");
+                Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(cooldownLeft));
+                    Logger.WriteLine("dGPU resync: follow-up after cooldown");
+                    RunDgpuResync();
+                });
+                return;
+            }
+
+            _resyncFollowUpUsed = false;
+            Logger.WriteLine("dGPU woke during EC writes, re-sending mode and fans once the writes finish");
+            RunDgpuResync();
+        }
+
+        private void RunDgpuResync()
+        {
+            if (Interlocked.Exchange(ref _resyncQueued, 1) == 1) return;
 
             Task.Run(async () =>
             {
-                // Let the current mode/fan writes finish, then give the dGPU power-on time to complete
-                for (int i = 0; i < 100 && Volatile.Read(ref _ecBurstDepth) > 0; i++) await Task.Delay(100);
-                await Task.Delay(DgpuSettleMs);
-                SetPerformanceMode();
+                try
+                {
+                    // Let the current mode/fan writes finish, but don't wait for the dGPU to go back to sleep
+                    for (int i = 0; i < 100 && Volatile.Read(ref _ecBurstDepth) > 0; i++) await Task.Delay(100);
+                    await Task.Delay(DgpuResyncGapMs);
+
+                    if (!DgpuPowerWatcher.IsPoweredOn)
+                    {
+                        _resyncDeferred = true;
+                        Logger.WriteLine("dGPU resync: deferred until next dGPU wake");
+                        return;
+                    }
+
+                    _resyncDeferred = false;
+                    _lastDgpuResync = DateTime.Now;
+                    SetPerformanceMode();
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _resyncQueued, 0);
+                }
             });
+        }
+
+        public static void InvalidateAppliedClocks()
+        {
+            lock (_clocksLock) _appliedClocks = null;
+        }
+
+        private static void DeferClocks((int core, int memory, int limit) clocks)
+        {
+            lock (_clocksLock) _pendingClocks = clocks;
+            Logger.WriteLine($"Clocks: GPU asleep, deferred ({clocks.core}, {clocks.memory}, {clocks.limit})");
+        }
+
+        private void ApplyPendingClocks(DateTime wakeTime)
+        {
+            lock (_clocksLock)
+                if (_pendingClocks is null) return;
+
+            if (Interlocked.Exchange(ref _clocksWakeQueued, 1) == 1) return;
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(DgpuSettleMs);
+                    for (int i = 0; i < 100 && Volatile.Read(ref _ecBurstDepth) > 0; i++) await Task.Delay(100);
+
+                    if (HardwareControl.GpuControl is not NvidiaGpuControl nvControl) return;
+                    if (nvControl.IsAsleep) return; // Brief wake, stays pending for the next one
+
+                    (int core, int memory, int limit)? clocks;
+                    lock (_clocksLock)
+                    {
+                        clocks = _pendingClocks;
+                        _pendingClocks = null;
+                    }
+                    if (clocks is null) return;
+
+                    // No admin prompt here: this runs when the GPU happens to wake, not on a user action
+                    if (!ApplyClocks(nvControl, clocks.Value, false, true)) return;
+                    Logger.WriteLine("Clocks: applied on dGPU wake");
+                    settings.GPUInit();
+                }
+                catch (Exception ex)
+                {
+                    Logger.WriteLine("Clocks Error:" + ex.ToString());
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _clocksWakeQueued, 0);
+                }
+            });
+        }
+
+        // Returns false if the GPU went back to sleep and the clocks were deferred again
+        private static bool ApplyClocks(NvidiaGpuControl nvControl, (int core, int memory, int limit) clocks, bool launchAsAdmin, bool noWake)
+        {
+            int statusClocks = nvControl.SetClocks(clocks.core, clocks.memory);
+            int statusLimit = nvControl.SetMaxGPUClock(clocks.limit, noWake);
+
+            if (statusLimit == NvidiaGpuControl.ClockLimitUnknown)
+            {
+                if (nvControl.IsAsleep)
+                {
+                    DeferClocks(clocks);
+                    return false;
+                }
+                statusLimit = 0; // Awake and still unreadable: not supported here, so there's no limit to clear
+            }
+
+            if (noWake && statusClocks >= 0 && (statusLimit == 0 || ProcessHelper.IsUserAdministrator()))
+            {
+                lock (_clocksLock)
+                {
+                    _appliedClocks = clocks;
+                    _appliedClocksTime = DateTime.Now;
+                }
+            }
+
+            if ((statusLimit != 0 || statusClocks != 0) && launchAsAdmin) ProcessHelper.RunAsAdmin("gpu");
+            return true;
         }
 
         // Cezanne/Rembrandt (Renoir) + Phoenix/HawkPoint (Mobile) silently reset temp limit under load.
@@ -647,9 +787,28 @@ namespace GHelper.Mode
                 NvidiaGpuControl nvControl = (NvidiaGpuControl)HardwareControl.GpuControl;
                 try
                 {
-                    int statusClocks = nvControl.SetClocks(core, memory);
-                    int statusLimit = nvControl.SetMaxGPUClock(clock_limit);
-                    if ((statusLimit != 0 || statusClocks != 0) && launchAsAdmin) ProcessHelper.RunAsAdmin("gpu");
+                    // With dgpu_ec_sync, a sleeping GPU is left asleep. GPUInit is skipped too, as it reads the clocks.
+                    bool noWake = DgpuPowerWatcher.IsRunning;
+                    var clocks = (core, memory, limit: clock_limit);
+
+                    if (noWake)
+                    {
+                        if (nvControl.IsAsleep)
+                        {
+                            DeferClocks(clocks);
+                            return;
+                        }
+
+                        lock (_clocksLock)
+                        {
+                            _pendingClocks = null;
+
+                            // Not trusted across a power cycle: offsets may not survive D3, and re-checking an awake GPU wakes nothing
+                            if (_appliedClocks == clocks && DgpuPowerWatcher.LastWake <= _appliedClocksTime) return;
+                        }
+                    }
+
+                    ApplyClocks(nvControl, clocks, launchAsAdmin, noWake);
                 }
                 catch (Exception ex)
                 {

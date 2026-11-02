@@ -1040,6 +1040,7 @@ public static class HardwareControl
     public static void RecreateGpuControl()
     {
         if (AppConfig.NoGpu()) return;
+        GHelper.Mode.ModeControl.InvalidateAppliedClocks(); // Custom build: also covers Eco -> Standard
         try
         {
             DisposeGpuControl();
