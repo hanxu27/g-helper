@@ -6,6 +6,7 @@ using GHelper.Gpu.AMD;
 using GHelper.Gpu.NVidia;
 using GHelper.Helpers;
 using System.Diagnostics;
+using System.Globalization;
 using System.Management;
 using System.Runtime.InteropServices;
 
@@ -847,6 +848,98 @@ public static class HardwareControl
         if (log) Logger.WriteLine($"Temps: {cpuTemp} {gpuTemp} {cpuFan} {gpuFan} {midFan}");
 
         ReadBatteryState();
+    }
+
+    // Custom build: logs temps and fan speeds every 5 s while awake, to show what the fans do before a stuck-fans
+    // fault. One file per day in GHelper\sensors, deleted after sensor_log_days (default 7); "sensor_log": 0 turns
+    // it off. Never wakes the dGPU: its NVAPI temp is blank while it sleeps, and "EC" is the GPU temp as the EC reports it.
+    private static CancellationTokenSource? _sensorLogCts;
+    private static string _sensorLogDate = "";
+    private static bool _sensorLogFailed = false;
+    private const string SensorLogDateFormat = "yyyy-MM-dd";
+
+    private static string SensorLogFolder => Path.Combine(Logger.appPath, "sensors");
+
+    public static void StartSensorLog(string reason)
+    {
+        if (!AppConfig.IsNotFalse("sensor_log")) return;
+
+        var cts = new CancellationTokenSource();
+        Interlocked.Exchange(ref _sensorLogCts, cts)?.Cancel();
+
+        Task.Run(async () =>
+        {
+            WriteSensorLine("Started: " + reason);
+            try
+            {
+                while (!cts.IsCancellationRequested)
+                {
+                    try
+                    {
+                        LogSensors();
+                    }
+                    catch (Exception ex)
+                    {
+                        WriteSensorLine("Read error: " + ex.Message);
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(5), cts.Token);
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+    }
+
+    private static void WriteSensorLine(string line)
+    {
+        try
+        {
+            string date = DateTime.Now.ToString(SensorLogDateFormat, CultureInfo.InvariantCulture);
+            Directory.CreateDirectory(SensorLogFolder);
+            File.AppendAllText(Path.Combine(SensorLogFolder, date + ".txt"), $"{DateTime.Now}: {line}{Environment.NewLine}");
+
+            if (date != _sensorLogDate)
+            {
+                _sensorLogDate = date;
+                CleanupSensorLogs();
+            }
+            _sensorLogFailed = false;
+        }
+        catch (Exception ex)
+        {
+            if (!_sensorLogFailed) Logger.WriteLine("Sensor log error: " + ex.Message);
+            _sensorLogFailed = true;
+        }
+    }
+
+    // Only touches files named as a date, so anything else put in the folder is left alone
+    private static void CleanupSensorLogs()
+    {
+        int days = Math.Max(1, AppConfig.Get("sensor_log_days", 7));
+        DateTime cutoff = DateTime.Today.AddDays(-days);
+
+        foreach (string file in Directory.GetFiles(SensorLogFolder, "*.txt"))
+        {
+            if (DateTime.TryParseExact(Path.GetFileNameWithoutExtension(file), SensorLogDateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime date) && date < cutoff)
+                File.Delete(file);
+        }
+    }
+
+    public static void StopSensorLog()
+    {
+        Interlocked.Exchange(ref _sensorLogCts, null)?.Cancel();
+    }
+
+    private static void LogSensors()
+    {
+        if (Program.acpi is null) return;
+
+        int? nvTemp = (GpuControl as NvidiaGpuControl)?.GetCurrentTemperature();
+        int ecTemp = Program.acpi.DeviceGet(AsusACPI.Temp_GPU);
+        int cpuFanSpeed = Program.acpi.GetFan(AsusFan.CPU);
+        int gpuFanSpeed = Program.acpi.GetFan(AsusFan.GPU);
+        string dgpu = !DgpuPowerWatcher.IsRunning ? "?" : DgpuPowerWatcher.IsPoweredOn ? "on" : "off";
+
+        WriteSensorLine($"CPU {GetCPUTemp()}C | GPU {nvTemp}C EC {ecTemp}C | Fans {cpuFanSpeed * 100} {gpuFanSpeed * 100} RPM | dGPU {dgpu}");
     }
 
     // Lightweight sensor read used by the overlay timer - skips battery health, WMI and design capacity

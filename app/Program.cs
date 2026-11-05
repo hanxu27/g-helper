@@ -346,6 +346,8 @@ namespace GHelper
             ScreenControl.InitMiniled();
             VisualControl.InitBrightness();
 
+            if (init || wakeup) HardwareControl.StartSensorLog(init ? "startup" : "wake");
+
             // Custom build: re-send mode/fans/power once things are quiet, in case the BIOS dropped an EC message
             modeControl.ScheduleQuietReapply(init ? "startup" : wakeup ? "wake" : powerChanged ? "power source" : "auto modes");
 
@@ -400,6 +402,9 @@ namespace GHelper
             if (e.Mode == PowerModes.Suspend)
             {
                 Logger.WriteLine("Power Mode Changed:" + e.Mode.ToString());
+                HardwareControl.StopSensorLog();
+                ModeControl.CancelDgpuResync();
+                ModeControl.CancelQuietReapply();
                 gpuControl.StandardModeFix();
                 modeControl.ShutdownReset();
                 InputDispatcher.ShutdownStatusLed();

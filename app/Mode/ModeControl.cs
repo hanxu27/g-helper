@@ -65,6 +65,7 @@ namespace GHelper.Mode
         static int _resyncQueued = 0;
         static volatile bool _resyncDeferred = false;
         static bool _resyncFollowUpUsed = false;
+        static CancellationTokenSource? _resyncFollowUpCts;
 
         // Custom build: GPU clocks never wake a sleeping dGPU (with the watcher running). Requests made while it
         // sleeps wait for its next wake, because each wake is an EC notification the BIOS can drop.
@@ -101,6 +102,9 @@ namespace GHelper.Mode
             quietReapplyTimer.Start();
             Logger.WriteLine($"Quiet re-apply in {delay}s ({reason})");
         }
+
+        // A wake schedules its own re-apply, so one still counting down at sleep is never needed
+        public static void CancelQuietReapply() => quietReapplyTimer?.Stop();
 
         private void QuietReapply_Elapsed(object? sender, System.Timers.ElapsedEventArgs e)
         {
@@ -183,9 +187,14 @@ namespace GHelper.Mode
                 // Likely the resync's own writes colliding. Repair once more after the cooldown, never again from that one
                 _resyncFollowUpUsed = true;
                 Logger.WriteLine($"dGPU woke during EC writes, follow-up in {cooldownLeft:F0}s");
+
+                var cts = new CancellationTokenSource();
+                Interlocked.Exchange(ref _resyncFollowUpCts, cts)?.Cancel();
                 Task.Run(async () =>
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(cooldownLeft));
+                    try { await Task.Delay(TimeSpan.FromSeconds(cooldownLeft), cts.Token); }
+                    catch (OperationCanceledException) { return; }
+
                     Logger.WriteLine("dGPU resync: follow-up after cooldown");
                     RunDgpuResync();
                 });
@@ -195,6 +204,15 @@ namespace GHelper.Mode
             _resyncFollowUpUsed = false;
             Logger.WriteLine("dGPU woke during EC writes, re-sending mode and fans once the writes finish");
             RunDgpuResync();
+        }
+
+        // Timers pause during sleep, so a follow-up would otherwise fire after wake for a collision from before it.
+        // A wake re-sends everything anyway through the quiet re-apply.
+        public static void CancelDgpuResync()
+        {
+            Interlocked.Exchange(ref _resyncFollowUpCts, null)?.Cancel();
+            _resyncDeferred = false;
+            _resyncFollowUpUsed = false;
         }
 
         private void RunDgpuResync()

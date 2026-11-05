@@ -56,6 +56,8 @@ Add these to `%AppData%\GHelper\config.json` (inside the `{ }`, separated by com
 | `ec_reapply_delay` | 10 | Seconds before the quiet re-apply. `0` turns it off |
 | `battery_dedupe` | 10 | Seconds within which a repeated, already-accepted battery limit write is skipped |
 | `gpu_temp_wake` | off | Set to `1` to let G-Helper wake a sleeping GPU to read its temperature (upstream behavior) |
+| `sensor_log` | on | Set to `0` to turn off fan and temperature logging |
+| `sensor_log_days` | 7 | Days to keep the daily sensor files before they're deleted |
 | `reapply_time` | 30 | Seconds between re-applies of SMU settings (fPPT, undervolt, CPU temp limit) |
 
 Example:
@@ -85,6 +87,14 @@ Select-String "dGPU|Quiet re-apply|FAST \(SMU\)|BatteryLimit" $env:APPDATA\GHelp
 | `Quiet re-apply: re-sending mode, fans, power and battery limit` | The quiet re-apply ran |
 | `FAST (SMU): 45W OK` | fPPT was set through the SMU |
 | `BatteryLimit = 80 : skipped (already set)` | A duplicate battery limit write was skipped |
+
+Temperatures and fan speeds are logged separately, every 5 seconds while the laptop is awake, in `%AppData%\GHelper\sensors\` with one file per day:
+
+```
+11/2/2026 8:55:18 PM: CPU 70C | GPU 49C EC 35C | Fans 0 0 RPM | dGPU on
+```
+
+The GPU reading is blank while the GPU sleeps, and `EC` is the GPU temperature as the EC reports it. A fan speed of `-100` means the read failed.
 
 ## Known limitations
 
